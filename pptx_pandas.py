@@ -70,7 +70,9 @@ class PresentationWriter():
                     charts_per_row: int = 2, tables_per_row: int = 1,
                     position_overrides: dict = {},
                     auto_position_charts_and_tables: bool = False,
-                    table_font_attrs: Optional[dict] = None) -> pptx.slide.Slide:
+                    table_font_attrs: Optional[dict] = None,
+                    include_internal_cell_borders = True,
+                    border_kwargs = {}) -> pptx.slide.Slide:
         
         if charts_and_tables:
             if charts or tables:
@@ -160,13 +162,11 @@ class PresentationWriter():
 
             for i, table in enumerate(tables):
                 col_widths = [positions['index_width']] + [positions['col_width']]*len(table.columns)
-                table_df = table.get_formatted_df()
-                table_df.columns = [s.replace('<br>', '\n')
-                                    if isinstance(s, str) else s
-                                    for s in table_df.columns]
+                table_df = prettypandas_to_formatted_df(table)
                 table_shape = create_pptx_table(slide, table_df, left = total_width, top = total_height, 
                                                 col_width = col_widths, row_height = positions['table_row_height'],
-                                                font_attrs = font_attrs)
+                                                font_attrs = font_attrs, 
+                                                border_kwargs = border_kwargs, include_internal_cell_borders = include_internal_cell_borders)
                 
                 total_width += sum(col_widths) + positions['charts_horizontal_gap']
                 current_row.append(table_shape)
@@ -244,7 +244,7 @@ class PresentationWriter():
 
             top_pos += cell_height
     
-    def overwrite_pptx(self, slide_title, strats_charts = None, strats_tables = None):
+    def overwrite_pptx(self, slide_title, charts = None, tables = None):
         prs = self.presentation
 
         for i, slide in enumerate(prs.slides):
@@ -260,47 +260,51 @@ class PresentationWriter():
                 break
 
         if matched_title:
-            charts = []
-            tables = []
+            found_charts = []
+            found_tables = []
             for s in slide.shapes:
                 if isinstance(s, pptx.shapes.picture.Picture):
-                    charts.append(s)
+                    found_charts.append(s)
                 elif isinstance(s, pptx.shapes.graphfrm.GraphicFrame) and s.has_table:
-                    tables.append(s)
+                    found_tables.append(s)
 
-            if strats_charts:
-                if len(strats_charts) != len(charts):
+            if charts:
+                if len(charts) != len(found_charts):
                     raise RuntimeError('Need %d Picture shapes but %d available on slide "%s"'
-                                       % (len(strats_chart), len(charts), slide_title))
+                                       % (len(strats_chart), len(found_charts), slide_title))
 
-                for i, strats_chart in enumerate(strats_charts):
+                for i, strats_chart in enumerate(charts):
                     img_file = 'test%d.png' % i
                     chart_to_file(strats_chart, img_file)
 
                     # Replace image:
-                    picture = charts[i]
+                    picture = found_charts[i]
                     with open(img_file, 'rb') as f:
                         imgBlob = f.read()
                     imgRID = picture._pic.xpath('./p:blipFill/a:blip/@r:embed')[0]
                     imgPart = slide.part.related_parts[imgRID]
                     imgPart._blob = imgBlob
 
-            if strats_tables:
-                if len(strats_tables) != len(tables):
+            if tables:
+                if len(tables) != len(found_tables):
                     raise RuntimeError('Need %d Table shapes but %d available on slide "%s"'
-                                       % (strats_tables, len(tables), slide_title))
+                                       % (tables, len(found_tables), slide_title))
                     
-                for i, strats_table in enumerate(strats_tables):
-                    table_df = strats_table.get_formatted_df()
-                    table_df.columns = [s.replace('<br>', '\n')
-                                        for s in table_df.columns
-                                        if isinstance(s, str)]
-                    write_pptx_dataframe(table_df, tables[i].table, overwrite_formatting = False)
+                for i, strats_table in enumerate(tables):
+                    table_df = prettypandas_to_formatted_df(table)
+                    write_pptx_dataframe(table_df, found_tables[i].table, overwrite_formatting = False)
 
             self.save_presentation()
         else:
             raise NoExistingSlideFoundError('No existing slide titled "%s"' % slide_title)
-    
+
+def prettypandas_to_formatted_df(pp_instance):
+    table_df = pp_instance.get_formatted_df()
+    table_df.columns = [s.replace('<br>', '\n')
+                        for s in table_df.columns
+                        if isinstance(s, str)]
+    return table_df
+
 def set_cell_text(cell, text, overwrite_formatting = True):
     if text == '':
         text = "\u00A0" # unicode nbsp - needed to fill empty cells as otherwise formatting is not applied by PPT
@@ -333,12 +337,28 @@ def format_cell_text(val, float_format = '{:.0f}', int_format = '{:d}'):
     else:
         return text_type(val)
     
-def set_cell_appearance(cell):
-    _set_cell_border(cell)
+def set_cell_borders(cell, border_color="4f81bd", border_width='6350', border_scheme_color = 'accent1', borders = 'LRTB'):
+    """ Hack function to enable the setting of border width and border color"""
+    tc = cell._tc
+    tcPr = tc.get_or_add_tcPr()
+
+    for border in borders:
+        lnL = SubElement(tcPr, 'a:ln' + border, w=border_width, cap='flat', cmpd='sng', algn='ctr')
+        lnL_solidFill = SubElement(lnL, 'a:solidFill')
+        if border_scheme_color is not None:
+            lnL_srgbClr = SubElement(lnL_solidFill, 'a:schemeClr', val=border_scheme_color)
+        else:
+            lnL_srgbClr = SubElement(lnL_solidFill, 'a:srgbClr', val=border_color)
+        lnL_prstDash = SubElement(lnL, 'a:prstDash', val='solid')
+        lnL_round_ = SubElement(lnL, 'a:round')
+        lnL_headEnd = SubElement(lnL, 'a:headEnd', type='none', w='med', len='med')
+        lnL_tailEnd = SubElement(lnL, 'a:tailEnd', type='none', w='med', len='med')
     cell.fill.background()
     
 def write_pptx_dataframe(dataframe, pptx_table, col_width = 1.0, format_opts = {}, font_attrs = {'size': Pt(8), 'name': 'Calibri'},
                          header_font_attrs = {'bold': True, 'color_rgb': RGBColor(34, 64, 97)},
+                         border_kwargs = {},
+                         include_internal_cell_borders = True,
                          overwrite_formatting = True):
     rows, cols = dataframe.shape
     if isinstance(dataframe.index, pandas.MultiIndex):
@@ -358,7 +378,7 @@ def write_pptx_dataframe(dataframe, pptx_table, col_width = 1.0, format_opts = {
                            % (cols + indexes, len(pptx_table.columns)))
         
     header_font_attrs = dict(header_font_attrs, **font_attrs)
-    
+    last_col = len(dataframe.columns.values)-1
     for i in range(headers):
         #headers
         prev_header = no_prev_header = '##special missing value'
@@ -379,12 +399,18 @@ def write_pptx_dataframe(dataframe, pptx_table, col_width = 1.0, format_opts = {
                               overwrite_formatting = overwrite_formatting)
                 if overwrite_formatting:
                     set_cell_font_attrs(cell, **header_font_attrs)
-                    set_cell_appearance(cell)
+                    if include_internal_cell_borders:
+                        borders = 'LRTB'
+                    else:
+                        borders = '' + ('L' if c == 0 else '') + ('R' if c == last_col else '') + ('T' if i == 0 else '')
+                    set_cell_borders(cell, borders = borders, **border_kwargs)
             else:
                 mergeable_cell_count += 1
         if mergeable_cell_count > 0:
             pptx_table.cell(i, first_merged_cell + indexes).merge(pptx_table.cell(i, first_merged_cell + mergeable_cell_count + indexes))
-                
+    
+    last_row = rows-1
+    last_col = cols-1
     for c in range(cols):
         #set column widths
         if isinstance(col_width, numbers.Number):
@@ -402,7 +428,11 @@ def write_pptx_dataframe(dataframe, pptx_table, col_width = 1.0, format_opts = {
                           overwrite_formatting = overwrite_formatting)
             if overwrite_formatting:
                 set_cell_font_attrs(cell, **font_attrs)
-                set_cell_appearance(cell)
+                if include_internal_cell_borders:
+                    borders = 'LRTB'
+                else:
+                    borders = '' + ('R' if c == last_col else '') + ('B' if r == last_row else '')
+                set_cell_borders(cell, borders = borders, **border_kwargs)
 
     #index
     for r in range(rows):
@@ -413,7 +443,11 @@ def write_pptx_dataframe(dataframe, pptx_table, col_width = 1.0, format_opts = {
 
         if overwrite_formatting:
             set_cell_font_attrs(cell, **header_font_attrs)
-            set_cell_appearance(cell)
+            if include_internal_cell_borders:
+                borders = 'LRTB'
+            else:
+                borders = 'L' + ('B' if r == last_row else '')
+            set_cell_borders(cell, borders = borders, **border_kwargs)
     
     if overwrite_formatting:
         pptx_table.columns[0].width = DIST_METRIC(col_width if isinstance(col_width, numbers.Number) else col_width[0])
@@ -427,9 +461,13 @@ def write_pptx_dataframe(dataframe, pptx_table, col_width = 1.0, format_opts = {
                           overwrite_formatting = overwrite_formatting)
         if overwrite_formatting:
             set_cell_font_attrs(cell, **header_font_attrs)
-            set_cell_appearance(cell)
+            if include_internal_cell_borders:
+                borders = 'LRTB'
+            else:
+                borders = 'L' + ('T' if i == 0 else '')
+            set_cell_borders(cell, borders = borders, **border_kwargs)
         
-def create_pptx_table(pptx_slide, dataframe, left, top, col_width, row_height, **write_kwargs):
+def create_pptx_table(pptx_slide, dataframe, left, top, col_width, row_height, include_internal_cell_borders, **write_kwargs):
     rows, cols = dataframe.shape
     if isinstance(dataframe.index, pandas.MultiIndex):
         raise RuntimeError('Cannot yet cope with MultiIndex rows')
@@ -448,7 +486,7 @@ def create_pptx_table(pptx_slide, dataframe, left, top, col_width, row_height, *
                              width, height)
     
     table = table_shape.table
-    write_pptx_dataframe(dataframe, table, col_width = col_width, **write_kwargs)
+    write_pptx_dataframe(dataframe, table, col_width = col_width, include_internal_cell_borders = include_internal_cell_borders, **write_kwargs)
     return table_shape
     
 def chart_to_file(chart_obj, img_file: str):
@@ -464,25 +502,3 @@ def SubElement(parent, tagname, **kwargs):
         element.attrib.update(kwargs)
         parent.append(element)
         return element
-    
-def _set_cell_border(cell, border_color="4f81bd", border_width='12700', border_scheme_color = 'accent1'):
-    """ Hack function to enable the setting of border width and border color
-        - left border
-        - right border
-        - top border
-        - bottom border
-    """
-    tc = cell._tc
-    tcPr = tc.get_or_add_tcPr()
-
-    for border in 'LRTB':
-        lnL = SubElement(tcPr, 'a:ln' + border, w='3175', cap='flat', cmpd='sng', algn='ctr')
-        lnL_solidFill = SubElement(lnL, 'a:solidFill')
-        if border_scheme_color is not None:
-            lnL_srgbClr = SubElement(lnL_solidFill, 'a:schemeClr', val=border_scheme_color)
-        else:
-            lnL_srgbClr = SubElement(lnL_solidFill, 'a:srgbClr', val=border_color)
-        lnL_prstDash = SubElement(lnL, 'a:prstDash', val='solid')
-        lnL_round_ = SubElement(lnL, 'a:round')
-        lnL_headEnd = SubElement(lnL, 'a:headEnd', type='none', w='med', len='med')
-        lnL_tailEnd = SubElement(lnL, 'a:tailEnd', type='none', w='med', len='med')

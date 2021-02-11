@@ -9,7 +9,7 @@ with open(path.join(here, 'README.md')) as f:
 setup(
     name='pptx-pandas',
 
-    version='0.2',
+    version='0.3',
     
     python_requires='>3.7',
 
