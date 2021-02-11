@@ -7,6 +7,7 @@ from pptx.exc import PackageNotFoundError
 import pptx
 import numbers
 import pandas
+from prettypandas import PrettyPandas
 DIST_METRIC = Inches
 from six import text_type
 from itertools import zip_longest
@@ -34,7 +35,8 @@ class PresentationWriter():
     def __init__(self, pptx_file: str, pptx_title: str, pptx_template: str = None, 
                  default_overwrite_if_present: bool = False,
                  default_overwrite_only: bool = False,
-                 default_position_overrides: dict = {}):
+                 default_position_overrides: dict = {},
+                 default_table_font_attrs: dict = {'size': Pt(7), 'name': 'Calibri'}):
         self.pptx_file = pptx_file
         self.pptx_title = pptx_title
         
@@ -56,25 +58,32 @@ class PresentationWriter():
         self.default_overwrite_only = default_overwrite_only
         self.default_positions = dict(**BASE_POSITIONS)
         self.default_positions.update(default_position_overrides)
+        self.default_table_font_attrs = default_table_font_attrs
         
-    def chart_to_file(self, chart_obj, img_file: str):
-        if hasattr(chart_obj, 'write_image'):
-            #ply_pd plots
-            chart_obj.write_image(img_file, scale=2, width = chart_obj.width, height = chart_obj.height)
-        else:
-            #matplotlib plots...
-            chart_obj.figure.savefig(img_file, dpi = 300, bbox_inches = 'tight')
-            
     def save_presentation(self):
         self.presentation.save(self.pptx_file)
             
-    def write_slide(self, title: str, charts = [], tables: list[pandas.DataFrame] = [], 
+    def write_slide(self, title: str, charts = [], tables: list[PrettyPandas] = [], 
+                    charts_and_tables = [],
                     overwrite_if_present: Optional[bool] = None,
                     overwrite_only: Optional[bool] = None,
                     charts_per_row: int = 2, tables_per_row: int = 1,
                     position_overrides: dict = {},
-                    auto_position_charts_and_tables: bool = False) -> pptx.slide.Slide:
+                    auto_position_charts_and_tables: bool = False,
+                    table_font_attrs: Optional[dict] = None) -> pptx.slide.Slide:
         
+        if charts_and_tables:
+            if charts or tables:
+                raise ValueError('Either "charts_and_tables" or a combination of "charts" and "tables" args should be used')
+            charts = []
+            tables = []
+            for item in charts_and_tables:
+                if isinstance(item, PrettyPandas):
+                    tables.append(item)
+                else:
+                    charts.append(item)
+            auto_position_charts_and_tables = True
+
         positions = dict(**self.default_positions)
         positions.update(position_overrides)
         
@@ -105,10 +114,9 @@ class PresentationWriter():
 
         content.left, content.top, content.width, content.height = (Inches(x) for x in positions['content'])
 
-        font_attrs = dict(size = Pt(7), name = 'Calibri')
-        
         current_row = []
         shapes_added = [current_row]
+        chart_shapes = []
         if charts:
             total_chart_width = positions['multi_item_margin_left'] if len(charts) > 1 else positions['single_item_margin_left']
             initial_width = total_chart_width
@@ -122,7 +130,7 @@ class PresentationWriter():
                     chart_height = chrt.figure.get_figheight()
 
                 img_file = 'test%d.png' % i
-                self.chart_to_file(chrt, img_file)
+                chart_to_file(chrt, img_file)
 
                 pic = slide.shapes.add_picture(img_file, 
                                                left = Inches(total_chart_width), 
@@ -131,6 +139,7 @@ class PresentationWriter():
                                                height = Inches(chart_height))
                 total_chart_width += chart_width + positions['charts_horizontal_gap']
                 current_row.append(pic)
+                chart_shapes.append(pic)
                 if (i % charts_per_row) == (charts_per_row-1):
                     total_chart_height += chart_height + positions['charts_vertical_gap']
                     total_chart_width = initial_width
@@ -140,13 +149,15 @@ class PresentationWriter():
         if current_row:
             current_row = []
             shapes_added.append(current_row)
+        table_shapes = []
         if tables:
             total_width = (positions['multi_item_margin_left'] 
                            if len(tables) > 1 
                            else positions['single_table_margin_left'] or positions['single_item_margin_left'])
             initial_width = total_width
             total_height = positions['multi_item_margin_top'] if len(charts) == 0 else positions['single_table_margin_top']
-            
+            font_attrs = table_font_attrs or self.default_table_font_attrs
+
             for i, table in enumerate(tables):
                 col_widths = [positions['index_width']] + [positions['col_width']]*len(table.columns)
                 table_df = table.get_formatted_df()
@@ -159,6 +170,7 @@ class PresentationWriter():
                 
                 total_width += sum(col_widths) + positions['charts_horizontal_gap']
                 current_row.append(table_shape)
+                table_shapes.append(table_shape)
                 if (i % tables_per_row) == (tables_per_row-1):
                     total_height += (positions['table_row_height']*(len(table_df)+1)) + positions['charts_vertical_gap']
                     total_width = initial_width
@@ -169,6 +181,23 @@ class PresentationWriter():
             shapes_added = shapes_added[:-1]
             
         if auto_position_charts_and_tables:
+            if charts_and_tables:
+                # create a new "shapes_added" list of items by row, in the order of charts/tables spcified by "charts_and_tables"
+                chart_shapes_iter = iter(chart_shapes)
+                table_shapes_iter = iter(table_shapes)
+                shapes_added = []
+                current_row = []
+                for i, item in enumerate(charts_and_tables):
+                    if isinstance(item, PrettyPandas):
+                        current_row.append(next(table_shapes_iter))
+                    else:
+                        current_row.append(next(chart_shapes_iter))
+                    if (i+1) % charts_per_row == 0:
+                        shapes_added.append(current_row)
+                        current_row = []
+                if current_row:
+                    shapes_added.append(current_row)
+
             content_area_top = subtitle.top + subtitle.height
             content_area_height = self.presentation.slide_height - content_area_top
             if len(others) == 1:
@@ -246,7 +275,7 @@ class PresentationWriter():
 
                 for i, strats_chart in enumerate(strats_charts):
                     img_file = 'test%d.png' % i
-                    self.chart_to_file(strats_chart, img_file)
+                    chart_to_file(strats_chart, img_file)
 
                     # Replace image:
                     picture = charts[i]
@@ -305,8 +334,8 @@ def format_cell_text(val, float_format = '{:.0f}', int_format = '{:d}'):
         return text_type(val)
     
 def set_cell_appearance(cell):
-    cell.fill.background()
     _set_cell_border(cell)
+    cell.fill.background()
     
 def write_pptx_dataframe(dataframe, pptx_table, col_width = 1.0, format_opts = {}, font_attrs = {'size': Pt(8), 'name': 'Calibri'},
                          header_font_attrs = {'bold': True, 'color_rgb': RGBColor(34, 64, 97)},
@@ -422,6 +451,14 @@ def create_pptx_table(pptx_slide, dataframe, left, top, col_width, row_height, *
     write_pptx_dataframe(dataframe, table, col_width = col_width, **write_kwargs)
     return table_shape
     
+def chart_to_file(chart_obj, img_file: str):
+    if hasattr(chart_obj, 'write_image'):
+        #ply_pd plots
+        chart_obj.write_image(img_file, scale=2, width = chart_obj.width, height = chart_obj.height)
+    else:
+        #matplotlib plots...
+        chart_obj.figure.savefig(img_file, dpi = 300, bbox_inches = 'tight')
+
 def SubElement(parent, tagname, **kwargs):
         element = OxmlElement(tagname)
         element.attrib.update(kwargs)
