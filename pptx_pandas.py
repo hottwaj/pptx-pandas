@@ -36,7 +36,9 @@ class PresentationWriter():
                  default_overwrite_if_present: bool = False,
                  default_overwrite_only: bool = False,
                  default_position_overrides: dict = {},
-                 default_table_font_attrs: dict = {'size': Pt(7), 'name': 'Calibri'}):
+                 default_table_font_attrs: dict = {'size': Pt(7), 'name': 'Calibri'},
+                 default_include_internal_cell_borders = True,
+                 default_border_kwargs = {}):
         self.pptx_file = pptx_file
         self.pptx_title = pptx_title
         
@@ -59,6 +61,8 @@ class PresentationWriter():
         self.default_positions = dict(**BASE_POSITIONS)
         self.default_positions.update(default_position_overrides)
         self.default_table_font_attrs = default_table_font_attrs
+        self.default_include_internal_cell_borders = default_include_internal_cell_borders
+        self.default_border_kwargs = default_border_kwargs
         
     def save_presentation(self):
         self.presentation.save(self.pptx_file)
@@ -71,8 +75,8 @@ class PresentationWriter():
                     position_overrides: dict = {},
                     auto_position_charts_and_tables: bool = False,
                     table_font_attrs: Optional[dict] = None,
-                    include_internal_cell_borders = True,
-                    border_kwargs = {}) -> pptx.slide.Slide:
+                    include_internal_cell_borders: Optional[bool] = None,
+                    border_kwargs: Optional[dict] = None) -> pptx.slide.Slide:
         
         if charts_and_tables:
             if charts or tables:
@@ -105,6 +109,8 @@ class PresentationWriter():
             else:
                 return
             
+        include_internal_cell_borders = include_internal_cell_borders if include_internal_cell_borders is not None else self.default_include_internal_cell_borders
+        border_kwargs = border_kwargs if border_kwargs is not None else self.default_border_kwargs
         prs = self.presentation
         title_only_slide_layout = prs.slide_layouts[3]
         slide = prs.slides.add_slide(title_only_slide_layout)
@@ -159,20 +165,31 @@ class PresentationWriter():
             initial_width = total_width
             total_height = positions['multi_item_margin_top'] if len(charts) == 0 else positions['single_table_margin_top']
             font_attrs = table_font_attrs or self.default_table_font_attrs
+            caption_font_attrs = {'bold': True, **font_attrs}
 
             for i, table in enumerate(tables):
                 col_widths = [positions['index_width']] + [positions['col_width']]*len(table.columns)
+                table_width = sum(col_widths)
                 table_df = prettypandas_to_formatted_df(table)
+                table_height = positions['table_row_height']*(len(table_df)+get_index_numlevels(table_df.columns))
                 table_shape = create_pptx_table(slide, table_df, left = total_width, top = total_height, 
                                                 col_width = col_widths, row_height = positions['table_row_height'],
                                                 font_attrs = font_attrs, 
                                                 border_kwargs = border_kwargs, include_internal_cell_borders = include_internal_cell_borders)
-                
-                total_width += sum(col_widths) + positions['charts_horizontal_gap']
+                table_caption = getattr(table, 'caption')
+                if table_caption:
+                    caption_box = slide.shapes.add_textbox(left = DIST_METRIC(total_width), 
+                                                           top = DIST_METRIC(total_height) - font_attrs['size']*2, 
+                                                           width = DIST_METRIC(table_width), 
+                                                           height = font_attrs['size'])
+                    set_cell_text(caption_box, table_caption)
+                    set_cell_font_attrs(caption_box, **caption_font_attrs)
+                    table_shape._pptx_pandas_caption = caption_box
+                total_width += table_width + positions['charts_horizontal_gap']
                 current_row.append(table_shape)
                 table_shapes.append(table_shape)
                 if (i % tables_per_row) == (tables_per_row-1):
-                    total_height += (positions['table_row_height']*(len(table_df)+1)) + positions['charts_vertical_gap']
+                    total_height += table_height + positions['charts_vertical_gap']
                     total_width = initial_width
                     current_row = []
                     shapes_added.append(current_row)
@@ -209,6 +226,11 @@ class PresentationWriter():
                                       Inches(positions['charts_horizontal_gap']),
                                       Inches(positions['charts_vertical_gap']),
                                       centre_y_shift)
+            for table_shape in table_shapes:
+                caption_box = getattr(table_shape, '_pptx_pandas_caption')
+                if caption_box:
+                    caption_box.left = table_shape.left
+                    caption_box.top = table_shape.top - caption_box.height*2
         self.save_presentation()
         return slide
     
@@ -305,8 +327,9 @@ def prettypandas_to_formatted_df(pp_instance):
                         if isinstance(s, str)]
     return table_df
 
+empty_text_set = {'', None}
 def set_cell_text(cell, text, overwrite_formatting = True):
-    if text == '':
+    if text in empty_text_set:
         text = "\u00A0" # unicode nbsp - needed to fill empty cells as otherwise formatting is not applied by PPT
     if overwrite_formatting:
         p = cell.text_frame.paragraphs[0]
@@ -355,45 +378,48 @@ def set_cell_borders(cell, border_color="4f81bd", border_width='6350', border_sc
         lnL_tailEnd = SubElement(lnL, 'a:tailEnd', type='none', w='med', len='med')
     cell.fill.background()
     
+def get_index_numlevels(pd_index):
+    if isinstance(pd_index, pandas.MultiIndex):
+        return len(pd_index.levels)
+    else:
+        return 1
+        
 def write_pptx_dataframe(dataframe, pptx_table, col_width = 1.0, format_opts = {}, font_attrs = {'size': Pt(8), 'name': 'Calibri'},
                          header_font_attrs = {'bold': True, 'color_rgb': RGBColor(34, 64, 97)},
                          border_kwargs = {},
                          include_internal_cell_borders = True,
                          overwrite_formatting = True):
-    rows, cols = dataframe.shape
+    num_rows, num_cols = dataframe.shape
     if isinstance(dataframe.index, pandas.MultiIndex):
         raise RuntimeError('Cannot yet cope with MultiIndex in rows')
-    indexes = 1
+    num_indexes = 1
     
-    if isinstance(dataframe.columns, pandas.MultiIndex):
-        headers = len(dataframe.columns.levels)
-    else:
-        headers = 1
+    num_header_rows = get_index_numlevels(dataframe.columns)
         
-    if (rows + headers) != len(pptx_table.rows):
+    if (num_rows + num_header_rows) != len(pptx_table.rows):
         raise RuntimeError('Need %d rows but PPTX table has %d'
-                           % (rows + headers, len(pptx_table.rows)))
-    if (cols + indexes) != len(pptx_table.columns):
+                           % (num_rows + num_header_rows, len(pptx_table.rows)))
+    if (num_cols + num_indexes) != len(pptx_table.columns):
         raise RuntimeError('Need %d columns but PPTX table has %d'
-                           % (cols + indexes, len(pptx_table.columns)))
+                           % (num_cols + num_indexes, len(pptx_table.columns)))
         
     header_font_attrs = dict(header_font_attrs, **font_attrs)
     last_col = len(dataframe.columns.values)-1
-    for i in range(headers):
+    for i in range(num_header_rows):
         #headers
         prev_header = no_prev_header = '##special missing value'
         first_merged_cell = 0
         mergeable_cell_count = 0
         for c, header_name in enumerate(dataframe.columns.values):
-            col_name = header_name[i] if headers > 1 else header_name
+            col_name = header_name[i] if num_header_rows > 1 else header_name
             if prev_header == no_prev_header or prev_header != col_name:
                 if mergeable_cell_count > 0:
-                    pptx_table.cell(i, first_merged_cell + indexes).merge(pptx_table.cell(i, first_merged_cell + mergeable_cell_count + indexes))
+                    pptx_table.cell(i, first_merged_cell + num_indexes).merge(pptx_table.cell(i, first_merged_cell + mergeable_cell_count + num_indexes))
                 prev_header = col_name
                 first_merged_cell = c
                 mergeable_cell_count = 0
                 
-                cell = pptx_table.cell(i, c + indexes)
+                cell = pptx_table.cell(i, c + num_indexes)
                 set_cell_text(cell, 
                               format_cell_text(col_name, **format_opts), 
                               overwrite_formatting = overwrite_formatting)
@@ -407,22 +433,22 @@ def write_pptx_dataframe(dataframe, pptx_table, col_width = 1.0, format_opts = {
             else:
                 mergeable_cell_count += 1
         if mergeable_cell_count > 0:
-            pptx_table.cell(i, first_merged_cell + indexes).merge(pptx_table.cell(i, first_merged_cell + mergeable_cell_count + indexes))
+            pptx_table.cell(i, first_merged_cell + num_indexes).merge(pptx_table.cell(i, first_merged_cell + mergeable_cell_count + num_indexes))
     
-    last_row = rows-1
-    last_col = cols-1
-    for c in range(cols):
+    last_row = num_rows-1
+    last_col = num_cols-1
+    for c in range(num_cols):
         #set column widths
         if isinstance(col_width, numbers.Number):
             w = DIST_METRIC(col_width)
         else:
             w = DIST_METRIC(col_width[c + 1])
         if overwrite_formatting:
-            pptx_table.columns[c + indexes].width = w
+            pptx_table.columns[c + num_indexes].width = w
 
         #body cells
-        for r in range(rows):
-            cell = pptx_table.cell(r + headers, c + indexes)
+        for r in range(num_rows):
+            cell = pptx_table.cell(r + num_header_rows, c + num_indexes)
             set_cell_text(cell, 
                           format_cell_text(dataframe.iloc[r, c], **format_opts), 
                           overwrite_formatting = overwrite_formatting)
@@ -435,8 +461,8 @@ def write_pptx_dataframe(dataframe, pptx_table, col_width = 1.0, format_opts = {
                 set_cell_borders(cell, borders = borders, **border_kwargs)
 
     #index
-    for r in range(rows):
-        cell = pptx_table.cell(r + headers, 0)
+    for r in range(num_rows):
+        cell = pptx_table.cell(r + num_header_rows, 0)
         set_cell_text(cell, 
                       format_cell_text(dataframe.index[r], **format_opts), 
                       overwrite_formatting = overwrite_formatting)
@@ -453,12 +479,11 @@ def write_pptx_dataframe(dataframe, pptx_table, col_width = 1.0, format_opts = {
         pptx_table.columns[0].width = DIST_METRIC(col_width if isinstance(col_width, numbers.Number) else col_width[0])
     
     #index name
-    for i in range(headers):
+    for i in range(num_header_rows):
         cell = pptx_table.cell(i, 0)
-        if dataframe.index.name is not None:
-            set_cell_text(cell, 
-                          format_cell_text(dataframe.index.name, **format_opts), 
-                          overwrite_formatting = overwrite_formatting)
+        set_cell_text(cell, 
+                      format_cell_text(dataframe.index.name if dataframe.index.name is not None else '', **format_opts), 
+                      overwrite_formatting = overwrite_formatting)
         if overwrite_formatting:
             set_cell_font_attrs(cell, **header_font_attrs)
             if include_internal_cell_borders:
@@ -468,20 +493,17 @@ def write_pptx_dataframe(dataframe, pptx_table, col_width = 1.0, format_opts = {
             set_cell_borders(cell, borders = borders, **border_kwargs)
         
 def create_pptx_table(pptx_slide, dataframe, left, top, col_width, row_height, include_internal_cell_borders, **write_kwargs):
-    rows, cols = dataframe.shape
+    num_rows, num_cols = dataframe.shape
     if isinstance(dataframe.index, pandas.MultiIndex):
         raise RuntimeError('Cannot yet cope with MultiIndex rows')
-    indexes = 1
+    num_indexes = 1
 
-    if isinstance(dataframe.columns, pandas.MultiIndex):
-        headers = len(dataframe.columns.levels)
-    else:
-        headers = 1
+    num_header_rows = get_index_numlevels(dataframe.columns)
 
-    width = DIST_METRIC(col_width * cols if isinstance(col_width, numbers.Number) else sum(col_width))
-    height = DIST_METRIC(row_height * rows)
+    width = DIST_METRIC(col_width * num_cols if isinstance(col_width, numbers.Number) else sum(col_width))
+    height = DIST_METRIC(row_height * num_rows)
 
-    table_shape = pptx_slide.shapes.add_table(rows + headers, cols + indexes, 
+    table_shape = pptx_slide.shapes.add_table(num_rows + num_header_rows, num_cols + num_indexes, 
                              DIST_METRIC(left), DIST_METRIC(top), 
                              width, height)
     
