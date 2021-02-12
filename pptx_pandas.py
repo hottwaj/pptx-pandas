@@ -227,7 +227,7 @@ class PresentationWriter():
                                       Inches(positions['charts_vertical_gap']),
                                       centre_y_shift)
             for table_shape in table_shapes:
-                caption_box = getattr(table_shape, '_pptx_pandas_caption')
+                caption_box = getattr(table_shape, '_pptx_pandas_caption', None)
                 if caption_box:
                     caption_box.left = table_shape.left
                     caption_box.top = table_shape.top - caption_box.height*2
