@@ -75,6 +75,7 @@ class PresentationWriter():
                     position_overrides: dict = {},
                     auto_position_charts_and_tables: bool = False,
                     table_font_attrs: Optional[dict] = None,
+                    caption_font_attrs: Optional[dict] = None,
                     include_internal_cell_borders: Optional[bool] = None,
                     border_kwargs: Optional[dict] = None) -> pptx.slide.Slide:
         
@@ -165,7 +166,8 @@ class PresentationWriter():
             initial_width = total_width
             total_height = positions['multi_item_margin_top'] if len(charts) == 0 else positions['single_table_margin_top']
             font_attrs = table_font_attrs or self.default_table_font_attrs
-            caption_font_attrs = {'bold': True, **font_attrs}
+            if caption_font_attrs is None:
+                caption_font_attrs = {'bold': True, **font_attrs}
 
             for i, table in enumerate(tables):
                 col_widths = [positions['index_width']] + [positions['col_width']]*len(table.columns)
@@ -179,9 +181,9 @@ class PresentationWriter():
                 table_caption = getattr(table, 'caption')
                 if table_caption:
                     caption_box = slide.shapes.add_textbox(left = DIST_METRIC(total_width), 
-                                                           top = DIST_METRIC(total_height) - font_attrs['size']*2, 
+                                                           top = DIST_METRIC(total_height) - caption_font_attrs['size']*2, 
                                                            width = DIST_METRIC(table_width), 
-                                                           height = font_attrs['size'])
+                                                           height = caption_font_attrs['size'])
                     set_cell_text(caption_box, table_caption)
                     set_cell_font_attrs(caption_box, **caption_font_attrs)
                     table_shape._pptx_pandas_caption = caption_box
@@ -227,8 +229,8 @@ class PresentationWriter():
                                       Inches(positions['charts_vertical_gap']),
                                       centre_y_shift)
             for table_shape in table_shapes:
-                caption_box = getattr(table_shape, '_pptx_pandas_caption')
-                if caption_box:
+                if hasattr(table_shape, '_pptx_pandas_caption'):
+                    caption_box = getattr(table_shape, '_pptx_pandas_caption')
                     caption_box.left = table_shape.left
                     caption_box.top = table_shape.top - caption_box.height*2
         self.save_presentation()
