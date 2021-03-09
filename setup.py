@@ -9,14 +9,14 @@ with open(path.join(here, 'README.md')) as f:
 setup(
     name='pptx-pandas',
 
-    version='0.7',
+    version='0.8',
     
     python_requires='>3.7',
 
     description='Helper methods to convert pandas DataFrames, plotly and matplotlib charts to pptx equivalents',
     long_description=long_description,
 
-    url='https://github.com/hottwaj/classproperties',
+    url='https://github.com/hottwaj/pptx-pandas',
 
     author='Jonathan Clarke',
     author_email='jonathan.a.clarke@gmail.com',
@@ -35,7 +35,7 @@ setup(
                       #prettypandas - for formatted tables
                       "prettypandas @ https://github.com/hottwaj/PrettyPandas/archive/0.0.4jc.tar.gz", 
                       #plotly, for plotly_pandas - wrapped plotly js charts
-                      "plotly @ https://github.com/hottwaj/plotly.py/archive/v4.14.0d-jc.tar.gz#egg=plotly&subdirectory=packages/python/plotly",
+                      "plotly @ https://github.com/hottwaj/plotly.py/archive/v4.14.0e-jc.tar.gz#egg=plotly&subdirectory=packages/python/plotly",
                       "python-pptx>=0.6.18",
                       "pandas>=1.2.0"],
 )
