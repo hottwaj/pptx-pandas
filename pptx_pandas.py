@@ -7,15 +7,29 @@ from pptx.exc import PackageNotFoundError
 import pptx
 import numbers
 import pandas
-from prettypandas import PrettyPandas
-DIST_METRIC = Inches
-from six import text_type
 from itertools import zip_longest
-
 from shutil import copyfile
+from typing import Union, Protocol
+
+class PrettyPandas(Protocol):
+    def get_formatted_df(self) -> pandas.DataFrame: pass
+
+Table = Union[pandas.DataFrame, PrettyPandas]
+
+class PlotlyChartBundle(Protocol):
+    def write_image(self, filename: str, scale: float, *args, **kwargs): pass
+
+class MatplotlibFigure(Protocol):
+    def savefig(filename: str, *args, **kwargs): pass
+
+class MatplotlibPlot(Protocol):
+    figure: MatplotlibFigure
+
+Chart = Union[PlotlyChartBundle, MatplotlibPlot]
 
 class NoExistingSlideFoundError(RuntimeError): pass
 
+DIST_METRIC = Inches
 BASE_POSITIONS = {
     'content': [5.2, 4.1, 5, 2.7],
     'index_width': 0.7, 
@@ -67,8 +81,8 @@ class PresentationWriter():
     def save_presentation(self):
         self.presentation.save(self.pptx_file)
             
-    def write_slide(self, title: str, charts = [], tables: list[PrettyPandas] = [], 
-                    charts_and_tables = [],
+    def write_slide(self, title: str, charts: list[Chart] = [], tables: list[Table] = [],
+                    charts_and_tables: list[Union[Chart, Table]] = [],
                     overwrite_if_present: Optional[bool] = None,
                     overwrite_only: Optional[bool] = None,
                     charts_per_row: int = 2, tables_per_row: int = 1,
@@ -85,7 +99,7 @@ class PresentationWriter():
             charts = []
             tables = []
             for item in charts_and_tables:
-                if isinstance(item, PrettyPandas):
+                if is_table_instance(item):
                     tables.append(item)
                 else:
                     charts.append(item)
@@ -115,7 +129,6 @@ class PresentationWriter():
         prs = self.presentation
         title_only_slide_layout = prs.slide_layouts[3]
         slide = prs.slides.add_slide(title_only_slide_layout)
-        shapes = slide.shapes
 
         content, subtitle, title_shape, *others = [s for s in slide.shapes if s.has_text_frame]
         title_shape.text = self.pptx_title
@@ -172,7 +185,7 @@ class PresentationWriter():
             for i, table in enumerate(tables):
                 col_widths = [positions['index_width']] + [positions['col_width']]*len(table.columns)
                 table_width = sum(col_widths)
-                table_df = prettypandas_to_formatted_df(table)
+                table_df = table_to_dataframe(table)
                 table_height = positions['table_row_height']*(len(table_df)+get_index_numlevels(table_df.columns))
                 table_shape = create_pptx_table(slide, table_df, left = total_width, top = total_height, 
                                                 col_width = col_widths, row_height = positions['table_row_height'],
@@ -207,7 +220,7 @@ class PresentationWriter():
                 shapes_added = []
                 current_row = []
                 for i, item in enumerate(charts_and_tables):
-                    if isinstance(item, PrettyPandas):
+                    if is_table_instance(item):
                         current_row.append(next(table_shapes_iter))
                     else:
                         current_row.append(next(chart_shapes_iter))
@@ -268,7 +281,7 @@ class PresentationWriter():
 
             top_pos += cell_height
     
-    def overwrite_pptx(self, slide_title, charts = None, tables = None):
+    def overwrite_pptx(self, slide_title, charts: Optional(list[Chart]) = None, tables: Optional(list[Table]) = None):
         prs = self.presentation
 
         for i, slide in enumerate(prs.slides):
@@ -295,11 +308,11 @@ class PresentationWriter():
             if charts:
                 if len(charts) != len(found_charts):
                     raise RuntimeError('Need %d Picture shapes but %d available on slide "%s"'
-                                       % (len(strats_chart), len(found_charts), slide_title))
+                                       % (len(charts), len(found_charts), slide_title))
 
-                for i, strats_chart in enumerate(charts):
+                for i, chart in enumerate(charts):
                     img_file = 'test%d.png' % i
-                    chart_to_file(strats_chart, img_file)
+                    chart_to_file(chart, img_file)
 
                     # Replace image:
                     picture = found_charts[i]
@@ -315,15 +328,23 @@ class PresentationWriter():
                                        % (tables, len(found_tables), slide_title))
                     
                 for i, strats_table in enumerate(tables):
-                    table_df = prettypandas_to_formatted_df(table)
+                    table_df = table_to_dataframe(table)
                     write_pptx_dataframe(table_df, found_tables[i].table, overwrite_formatting = False)
 
             self.save_presentation()
         else:
             raise NoExistingSlideFoundError('No existing slide titled "%s"' % slide_title)
 
-def prettypandas_to_formatted_df(pp_instance):
-    table_df = pp_instance.get_formatted_df()
+def is_table_instance(obj: Any) -> bool:
+    return isinstance(obj, pandas.DataFrame) or hasattr(obj, 'get_formatted_df')
+
+def table_to_dataframe(table: Table) -> pandas.DataFrame:
+    if isinstance(table, pandas.DataFrame):
+        table_df = table.copy()
+    elif hasattr(table, 'get_formatted_df'):
+        table_df = table.get_formatted_df()
+    else:
+        return ValueError('table_to_dataframe(): Given table object is not a DataFrame or PrettyPandas object')
     table_df.columns = [s.replace('<br>', '\n')
                         for s in table_df.columns
                         if isinstance(s, str)]
@@ -360,7 +381,7 @@ def format_cell_text(val, float_format = '{:.0f}', int_format = '{:d}'):
     elif isinstance(val, numbers.Real):
         return float_format.format(val)
     else:
-        return text_type(val)
+        return str(val)
     
 def set_cell_borders(cell, border_color="4f81bd", border_width='6350', border_scheme_color = 'accent1', borders = 'LRTB'):
     """ Hack function to enable the setting of border width and border color"""
@@ -515,7 +536,7 @@ def create_pptx_table(pptx_slide, dataframe, left, top, col_width, row_height, i
     
 def chart_to_file(chart_obj, img_file: str):
     if hasattr(chart_obj, 'write_image'):
-        #ply_pd plots
+        #ply_pd PlotlyChartBundle plots
         chart_obj.write_image(img_file, scale=2, width = chart_obj.width, height = chart_obj.height)
     else:
         #matplotlib plots...
