@@ -51,8 +51,11 @@ class PresentationWriter():
                  default_overwrite_only: bool = False,
                  default_position_overrides: dict = {},
                  default_table_font_attrs: dict = {'size': Pt(7), 'name': 'Calibri'},
-                 default_include_internal_cell_borders = True,
-                 default_border_kwargs = {}):
+                 default_caption_font_attrs: Optional[dict] = None,
+                 default_include_internal_cell_borders: bool = True,
+                 default_border_kwargs: dict = {},
+                 default_slide_layout: str = 'Normal Page',
+                 default_remove_empty_text_boxes: bool = False):
         self.pptx_file = pptx_file
         self.pptx_title = pptx_title
         
@@ -75,8 +78,13 @@ class PresentationWriter():
         self.default_positions = dict(**BASE_POSITIONS)
         self.default_positions.update(default_position_overrides)
         self.default_table_font_attrs = default_table_font_attrs
+        self.default_caption_font_attrs = (default_caption_font_attrs
+                                           if default_caption_font_attrs is not None
+                                           else {**{'bold': True}, **default_table_font_attrs})
         self.default_include_internal_cell_borders = default_include_internal_cell_borders
         self.default_border_kwargs = default_border_kwargs
+        self.default_slide_layout = default_slide_layout
+        self.default_remove_empty_text_boxes = default_remove_empty_text_boxes
         
     def save_presentation(self):
         self.presentation.save(self.pptx_file)
@@ -88,10 +96,12 @@ class PresentationWriter():
                     charts_per_row: int = 2, tables_per_row: int = 1,
                     position_overrides: dict = {},
                     auto_position_charts_and_tables: bool = False,
+                    remove_empty_text_boxes: Optional[bool] = None,
                     table_font_attrs: Optional[dict] = None,
                     caption_font_attrs: Optional[dict] = None,
                     include_internal_cell_borders: Optional[bool] = None,
-                    border_kwargs: Optional[dict] = None) -> pptx.slide.Slide:
+                    border_kwargs: Optional[dict] = None,
+                    slide_layout: Optional[str] = None) -> pptx.slide.Slide:
         
         if charts_and_tables:
             if charts or tables:
@@ -127,7 +137,11 @@ class PresentationWriter():
         include_internal_cell_borders = include_internal_cell_borders if include_internal_cell_borders is not None else self.default_include_internal_cell_borders
         border_kwargs = border_kwargs if border_kwargs is not None else self.default_border_kwargs
         prs = self.presentation
-        title_only_slide_layout = prs.slide_layouts[3]
+        slide_layout_name = slide_layout or self.default_slide_layout
+        title_only_slide_layout = prs.slide_layouts.get_by_name(slide_layout_name)
+        if title_only_slide_layout is None:
+            possible_layouts = ', '.join([sl.name for sl in prs.slide_layouts])
+            raise ValueError(f'slide_layout="{slide_layout_name}" is not a valid layout in this presentation file. Options are: {possible_layouts}')
         slide = prs.slides.add_slide(title_only_slide_layout)
 
         content, subtitle, title_shape, *others = [s for s in slide.shapes if s.has_text_frame]
@@ -179,8 +193,7 @@ class PresentationWriter():
             initial_width = total_width
             total_height = positions['multi_item_margin_top'] if len(charts) == 0 else positions['single_table_margin_top']
             font_attrs = table_font_attrs or self.default_table_font_attrs
-            if caption_font_attrs is None:
-                caption_font_attrs = {'bold': True, **font_attrs}
+            caption_font_attrs = caption_font_attrs or self.default_caption_font_attrs
 
             for i, table in enumerate(tables):
                 col_widths = [positions['index_width']] + [positions['col_width']]*len(table.columns)
@@ -246,6 +259,10 @@ class PresentationWriter():
                 if caption_box:
                     caption_box.left = table_shape.left
                     caption_box.top = table_shape.top - caption_box.height*2
+
+        remove_empty_text_boxes = remove_empty_text_boxes if remove_empty_text_boxes is not None else self.default_remove_empty_text_boxes
+        if remove_empty_text_boxes:
+            self.remove_empty_text_boxes(slide)
         self.save_presentation()
         return slide
     
@@ -280,6 +297,13 @@ class PresentationWriter():
                 left_pos += width + horizontal_margin
 
             top_pos += cell_height
+
+    @classmethod
+    def remove_empty_text_boxes(cls, slide):
+        for shape in slide.shapes:
+            if shape.has_text_frame and not shape.text:
+                elem = shape.element
+                elem.getparent().remove(elem)
     
     def overwrite_pptx(self, slide_title, charts: Optional(list[Chart]) = None, tables: Optional(list[Table]) = None):
         prs = self.presentation
