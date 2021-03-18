@@ -88,7 +88,64 @@ class PresentationWriter():
         
     def save_presentation(self):
         self.presentation.save(self.pptx_file)
-            
+
+    def _new_slide_from_template(self, slide_layout_name: Optional[str] = None):
+        prs = self.presentation
+        slide_layout_name = slide_layout_name or self.default_slide_layout
+        slide_layout = prs.slide_layouts.get_by_name(slide_layout_name)
+        if slide_layout is None:
+            possible_layouts = ', '.join([sl.name for sl in prs.slide_layouts])
+            raise ValueError(f'slide_layout="{slide_layout_name}" is not a valid layout in this presentation file. Options are: {possible_layouts}')
+        return prs.slides.add_slide(slide_layout)
+
+    @classmethod
+    def _add_chart_to_slide(cls, chart: Chart, slide: pptx.slide.Slide, left: float, top: float, tmp_filename: str):
+        if hasattr(chart, 'width'):
+            chart_width = chart.width / 800.0 * 5.0
+            chart_height = chart.height / 800.0 * 5.0
+        else:
+            chart_width = chart.figure.get_figwidth()  # already in inches
+            chart_height = chart.figure.get_figheight()
+
+        chart_to_file(chart, tmp_filename)
+
+        return slide.shapes.add_picture(tmp_filename,
+                                        left = left,
+                                        top = top,
+                                        width = Inches(chart_width),
+                                        height = Inches(chart_height))
+
+    def _add_table_to_slide(self, table: Table, slide: pptx.slide.Slide, left: float, top: float,
+                            positions: dict,
+                            table_font_attrs: Optional[dict] = None,
+                            border_kwargs: Optional[dict] = None,
+                            include_internal_cell_borders: Optional[bool] = None,
+                            caption_font_attrs: Optional[dict] = None):
+        table_df = table_to_dataframe(table)
+        col_widths = [positions['index_width']] + [positions['col_width']] * len(table_df.columns)
+        table_shape = create_pptx_table(slide, table_df,
+                                        left = left,
+                                        top = top,
+                                        col_width = col_widths,
+                                        row_height = positions['table_row_height'],
+                                        font_attrs = table_font_attrs or self.default_table_font_attrs,
+                                        border_kwargs = border_kwargs or self.default_border_kwargs,
+                                        include_internal_cell_borders = include_internal_cell_borders
+                                                                        if include_internal_cell_borders is not None
+                                                                        else self.default_include_internal_cell_borders)
+        table_caption = getattr(table, 'caption')
+        if table_caption:
+            caption_font_attrs = caption_font_attrs or self.default_caption_font_attrs
+            caption_box = slide.shapes.add_textbox(left = left,
+                                                   top = top - caption_font_attrs['size'] * 2,
+                                                   width = table_shape.width,
+                                                   height = caption_font_attrs['size'])
+            set_cell_text(caption_box, table_caption)
+            set_cell_font_attrs(caption_box, **caption_font_attrs)
+            table_shape._pptx_pandas_caption = caption_box
+
+        return table_shape
+
     def write_slide(self, title: str, charts: list[Chart] = [], tables: list[Table] = [],
                     charts_and_tables: list[Union[Chart, Table]] = [],
                     overwrite_if_present: Optional[bool] = None,
@@ -101,7 +158,7 @@ class PresentationWriter():
                     caption_font_attrs: Optional[dict] = None,
                     include_internal_cell_borders: Optional[bool] = None,
                     border_kwargs: Optional[dict] = None,
-                    slide_layout: Optional[str] = None) -> pptx.slide.Slide:
+                    slide_layout_name: Optional[str] = None) -> pptx.slide.Slide:
         
         if charts_and_tables:
             if charts or tables:
@@ -115,8 +172,7 @@ class PresentationWriter():
                     charts.append(item)
             auto_position_charts_and_tables = True
 
-        positions = dict(**self.default_positions)
-        positions.update(position_overrides)
+        positions = {**self.default_positions, **position_overrides}
         
         if not isinstance(charts, (list, tuple)):
             charts = [charts]
@@ -134,51 +190,32 @@ class PresentationWriter():
             else:
                 return
             
-        include_internal_cell_borders = include_internal_cell_borders if include_internal_cell_borders is not None else self.default_include_internal_cell_borders
-        border_kwargs = border_kwargs if border_kwargs is not None else self.default_border_kwargs
-        prs = self.presentation
-        slide_layout_name = slide_layout or self.default_slide_layout
-        title_only_slide_layout = prs.slide_layouts.get_by_name(slide_layout_name)
-        if title_only_slide_layout is None:
-            possible_layouts = ', '.join([sl.name for sl in prs.slide_layouts])
-            raise ValueError(f'slide_layout="{slide_layout_name}" is not a valid layout in this presentation file. Options are: {possible_layouts}')
-        slide = prs.slides.add_slide(title_only_slide_layout)
+        slide = self._new_slide_from_template(slide_layout_name)
 
         content, subtitle, title_shape, *others = [s for s in slide.shapes if s.has_text_frame]
         title_shape.text = self.pptx_title
         subtitle.text = title
 
-        content.left, content.top, content.width, content.height = (Inches(x) for x in positions['content'])
+        content.left, content.top, content.width, content.height = (DIST_METRIC(x) for x in positions['content'])
 
         current_row = []
         shapes_added = [current_row]
         chart_shapes = []
         if charts:
-            total_chart_width = positions['multi_item_margin_left'] if len(charts) > 1 else positions['single_item_margin_left']
-            initial_width = total_chart_width
-            total_chart_height = positions['multi_item_margin_top'] if len(charts) > 2 else positions['single_item_margin_top']
+            curr_left = DIST_METRIC(positions['multi_item_margin_left'] if len(charts) > 1 else positions['single_item_margin_left'])
+            initial_left = curr_left
+            curr_top = DIST_METRIC(positions['multi_item_margin_top'] if len(charts) > 2 else positions['single_item_margin_top'])
             for i, chrt in enumerate(charts):
-                if hasattr(chrt, 'width'):
-                    chart_width = chrt.width / 800.0 * 5.0
-                    chart_height = chrt.height / 800.0 * 5.0
-                else:
-                    chart_width = chrt.figure.get_figwidth() #already in inches
-                    chart_height = chrt.figure.get_figheight()
-
-                img_file = 'test%d.png' % i
-                chart_to_file(chrt, img_file)
-
-                pic = slide.shapes.add_picture(img_file, 
-                                               left = Inches(total_chart_width), 
-                                               top = Inches(total_chart_height), 
-                                               width = Inches(chart_width), 
-                                               height = Inches(chart_height))
-                total_chart_width += chart_width + positions['charts_horizontal_gap']
+                pic = self._add_chart_to_slide(chrt, slide,
+                                               left = curr_left,
+                                               top = curr_top,
+                                               tmp_filename = 'pptx-img-%d.png' % i)
+                curr_left += pic.width + DIST_METRIC(positions['charts_horizontal_gap'])
                 current_row.append(pic)
                 chart_shapes.append(pic)
                 if (i % charts_per_row) == (charts_per_row-1):
-                    total_chart_height += chart_height + positions['charts_vertical_gap']
-                    total_chart_width = initial_width
+                    curr_top += pic.height + DIST_METRIC(positions['charts_vertical_gap'])
+                    curr_left = initial_left
                     current_row = []
                     shapes_added.append(current_row)
         
@@ -187,38 +224,28 @@ class PresentationWriter():
             shapes_added.append(current_row)
         table_shapes = []
         if tables:
-            total_width = (positions['multi_item_margin_left'] 
-                           if len(tables) > 1 
-                           else positions['single_table_margin_left'] or positions['single_item_margin_left'])
-            initial_width = total_width
-            total_height = positions['multi_item_margin_top'] if len(charts) == 0 else positions['single_table_margin_top']
-            font_attrs = table_font_attrs or self.default_table_font_attrs
-            caption_font_attrs = caption_font_attrs or self.default_caption_font_attrs
+            curr_left = DIST_METRIC(positions['multi_item_margin_left']
+                                      if len(tables) > 1
+                                      else positions['single_table_margin_left'] or positions['single_item_margin_left'])
+            initial_left = curr_left
+            curr_top = DIST_METRIC(positions['multi_item_margin_top'] if len(charts) == 0 else positions['single_table_margin_top'])
 
             for i, table in enumerate(tables):
-                col_widths = [positions['index_width']] + [positions['col_width']]*len(table.columns)
-                table_width = sum(col_widths)
-                table_df = table_to_dataframe(table)
-                table_height = positions['table_row_height']*(len(table_df)+get_index_numlevels(table_df.columns))
-                table_shape = create_pptx_table(slide, table_df, left = total_width, top = total_height, 
-                                                col_width = col_widths, row_height = positions['table_row_height'],
-                                                font_attrs = font_attrs, 
-                                                border_kwargs = border_kwargs, include_internal_cell_borders = include_internal_cell_borders)
-                table_caption = getattr(table, 'caption')
-                if table_caption:
-                    caption_box = slide.shapes.add_textbox(left = DIST_METRIC(total_width), 
-                                                           top = DIST_METRIC(total_height) - caption_font_attrs['size']*2, 
-                                                           width = DIST_METRIC(table_width), 
-                                                           height = caption_font_attrs['size'])
-                    set_cell_text(caption_box, table_caption)
-                    set_cell_font_attrs(caption_box, **caption_font_attrs)
-                    table_shape._pptx_pandas_caption = caption_box
-                total_width += table_width + positions['charts_horizontal_gap']
+                table_shape = self._add_table_to_slide(table, slide,
+                                                       left = curr_left,
+                                                       top = curr_top,
+                                                       positions = positions,
+                                                       table_font_attrs = table_font_attrs,
+                                                       border_kwargs = border_kwargs,
+                                                       include_internal_cell_borders = include_internal_cell_borders,
+                                                       caption_font_attrs = caption_font_attrs)
+
+                curr_left += table_shape.width + DIST_METRIC(positions['charts_horizontal_gap'])
                 current_row.append(table_shape)
                 table_shapes.append(table_shape)
                 if (i % tables_per_row) == (tables_per_row-1):
-                    total_height += table_height + positions['charts_vertical_gap']
-                    total_width = initial_width
+                    curr_top += table_shape.height + DIST_METRIC(positions['charts_vertical_gap'])
+                    curr_left = initial_left
                     current_row = []
                     shapes_added.append(current_row)
 
@@ -251,8 +278,8 @@ class PresentationWriter():
             # calculate shift from slide centre needed to put shapes in centre between bottom of subtitle and top of footnotes (if present)
             centre_y_shift = content_area_height/2 + content_area_top - self.presentation.slide_height/2
             self.auto_position_shapes(shapes_added,
-                                      Inches(positions['charts_horizontal_gap']),
-                                      Inches(positions['charts_vertical_gap']),
+                                      DIST_METRIC(positions['charts_horizontal_gap']),
+                                      DIST_METRIC(positions['charts_vertical_gap']),
                                       centre_y_shift)
             for table_shape in table_shapes:
                 caption_box = getattr(table_shape, '_pptx_pandas_caption', None)
@@ -551,7 +578,7 @@ def create_pptx_table(pptx_slide, dataframe, left, top, col_width, row_height, i
     height = DIST_METRIC(row_height * num_rows)
 
     table_shape = pptx_slide.shapes.add_table(num_rows + num_header_rows, num_cols + num_indexes, 
-                             DIST_METRIC(left), DIST_METRIC(top), 
+                             left, top,
                              width, height)
     
     table = table_shape.table
