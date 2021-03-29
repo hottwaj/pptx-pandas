@@ -27,22 +27,26 @@ class MatplotlibPlot(Protocol):
 
 Chart = Union[PlotlyChartBundle, MatplotlibPlot]
 
+def grouped(iterable, n):
+    "group a sequence of objects into a sequence of tuples each containing 'n' objects"
+    "s -> (s0,s1,s2,...sn-1), (sn,sn+1,sn+2,...s2n-1), (s2n,s2n+1,s2n+2,...s3n-1), ..."
+    #from http://stackoverflow.com/a/5389547/1280629
+    return zip_longest(*[iter(iterable)]*n)
+
 class NoExistingSlideFoundError(RuntimeError): pass
 
 DIST_METRIC = Inches
-BASE_POSITIONS = {
+DEFAULT_POSITIONS = {
     'content': [5.2, 4.1, 5, 2.7],
     'index_width': 0.7, 
-    'col_width': 0.6, 
-    'single_table_margin_top': 4.3,
-    'single_table_margin_left': None, # set to value other than None for different table vs chart left position
-    'single_item_margin_top': 1.7, 
-    'single_item_margin_left': 2.2,
-    'multi_item_margin_top': 1.4, 
-    'multi_item_margin_left': 1.5,
-    'charts_horizontal_gap': 0.7, 
-    'charts_vertical_gap': 0.5,
-    'table_row_height': 0.2
+    'col_width': 0.6,
+    'table_row_height': 0.2,
+    'single_item_top': 1.7, 
+    'single_item_left': 2.2,
+    'multi_item_top': 1.4, 
+    'multi_item_left': 1.5,
+    'horizontal_gap': 0.7,
+    'vertical_gap': 0.5
 }
     
 class PresentationWriter():
@@ -75,8 +79,7 @@ class PresentationWriter():
         
         self.default_overwrite_if_present = default_overwrite_if_present
         self.default_overwrite_only = default_overwrite_only
-        self.default_positions = dict(**BASE_POSITIONS)
-        self.default_positions.update(default_position_overrides)
+        self.default_positions = {**DEFAULT_POSITIONS, **default_position_overrides}
         self.default_table_font_attrs = default_table_font_attrs
         self.default_caption_font_attrs = (default_caption_font_attrs
                                            if default_caption_font_attrs is not None
@@ -146,50 +149,89 @@ class PresentationWriter():
 
         return table_shape
 
-    def write_slide(self, title: str, charts: list[Chart] = [], tables: list[Table] = [],
-                    charts_and_tables: list[Union[Chart, Table]] = [],
+    positions_deprecations = {'single_table_margin_top': 'single_item_top',
+                              'single_table_margin_left': 'single_item_left',
+                              'single_item_margin_top': 'single_item_top',
+                              'single_item_margin_left': 'single_item_left',
+                              'multi_item_margin_top': 'multi_item_top',
+                              'multi_item_margin_left': 'multi_item_left',
+                              'charts_horizontal_gap': 'horizontal_gap',
+                              'charts_vertical_gap': 'vertical_gap',}
+
+    @classmethod
+    def check_positions_settings(cls, positions):
+        bad_position_setting_list = []
+        for k in positions:
+            if k in cls.positions_deprecations:
+                bad_position_setting_list.append(f'{k} -> {cls.positions_deprecations[k]}')
+            elif k not in DEFAULT_POSITIONS:
+                bad_position_setting_list.append(f'{k} is not a valid position setting')
+        if bad_position_setting_list:
+            raise ValueError('Deprecated or invalid positions settings provided:\n'
+                             + '\n'.join(bad_position_setting_list))
+
+    write_slide_deprecated_kwargs = {'charts': 'elements',
+                                     'tables': 'elements',
+                                     'charts_and_tables': 'elements',
+                                     'charts_per_row': 'elements_per_row',
+                                     'tables_per_row': 'elements_per_row',
+                                     'auto_position_charts_and_tables': 'auto_position_elements',}
+
+    def write_slide(self, title: str,
+                    elements: Union[list[list[Union[Chart, Table]]], list[Union[Chart, Table]]],
                     overwrite_if_present: Optional[bool] = None,
                     overwrite_only: Optional[bool] = None,
-                    charts_per_row: int = 2, tables_per_row: int = 1,
+                    elements_per_row: Optional[int] = None,
                     position_overrides: dict = {},
-                    auto_position_charts_and_tables: bool = False,
+                    auto_position_elements: bool = False,
                     remove_empty_text_boxes: Optional[bool] = None,
                     table_font_attrs: Optional[dict] = None,
                     caption_font_attrs: Optional[dict] = None,
                     include_internal_cell_borders: Optional[bool] = None,
                     border_kwargs: Optional[dict] = None,
-                    slide_layout_name: Optional[str] = None) -> pptx.slide.Slide:
-        
-        if charts_and_tables:
-            if charts or tables:
-                raise ValueError('Either "charts_and_tables" or a combination of "charts" and "tables" args should be used')
-            charts = []
-            tables = []
-            for item in charts_and_tables:
-                if is_table_instance(item):
-                    tables.append(item)
+                    slide_layout_name: Optional[str] = None,
+                    **kwargs) -> pptx.slide.Slide:
+
+        deprecated_kwargs_used = []
+        not_known_kwargs = []
+        for k in kwargs:
+            new_k = self.write_slide_deprecated_kwargs.get(k)
+            if new_k is not None:
+                deprecated_kwargs_used.append(f'{k} -> {new_k}')
+            else:
+                not_known_kwargs.append(k)
+        if deprecated_kwargs_used:
+            raise ValueError(
+                'PresentationWriter.write_slide: following args are deprecated and should be changed as follows:\n' + '\n'.join(
+                    deprecated_kwargs_used))
+        if not_known_kwargs:
+            raise ValueError(
+                'PresentationWriter.write_slide: following kwargs are not known (possibly deprecated): ' + ', '.join(
+                    not_known_kwargs))
+
+        if elements:
+            if not isinstance(elements[0], list):
+                if elements_per_row is None:
+                    # wrap the elements in a single row
+                    elements = [elements]
                 else:
-                    charts.append(item)
-            auto_position_charts_and_tables = True
+                    # use elements_per_row to wrap the elements list into grouped rows
+                    elements = grouped(elements, elements_per_row)
 
         positions = {**self.default_positions, **position_overrides}
-        
-        if not isinstance(charts, (list, tuple)):
-            charts = [charts]
-        if not isinstance(tables, (list, tuple)):
-            tables = [tables]
-            
+        self.check_positions_settings(positions)
+
         overwrite_if_present = overwrite_if_present if overwrite_if_present is not None else self.default_overwrite_if_present
         overwrite_only = overwrite_only if overwrite_only is not None else self.default_overwrite_only
         if overwrite_if_present or overwrite_only:
             try:
-                self.overwrite_pptx(title, charts, tables)
+                self.overwrite_pptx(title, elements)
             except NoExistingSlideFoundError:
                 if overwrite_only:
                     raise
             else:
                 return
-            
+
         slide = self._new_slide_from_template(slide_layout_name)
 
         content, subtitle, title_shape, *others = [s for s in slide.shapes if s.has_text_frame]
@@ -198,88 +240,58 @@ class PresentationWriter():
 
         content.left, content.top, content.width, content.height = (DIST_METRIC(x) for x in positions['content'])
 
-        current_row = []
-        shapes_added = [current_row]
-        chart_shapes = []
-        if charts:
-            curr_left = DIST_METRIC(positions['multi_item_margin_left'] if len(charts) > 1 else positions['single_item_margin_left'])
-            initial_left = curr_left
-            curr_top = DIST_METRIC(positions['multi_item_margin_top'] if len(charts) > 2 else positions['single_item_margin_top'])
-            for i, chrt in enumerate(charts):
-                pic = self._add_chart_to_slide(chrt, slide,
-                                               left = curr_left,
-                                               top = curr_top,
-                                               tmp_filename = 'pptx-img-%d.png' % i)
-                curr_left += pic.width + DIST_METRIC(positions['charts_horizontal_gap'])
-                current_row.append(pic)
-                chart_shapes.append(pic)
-                if (i % charts_per_row) == (charts_per_row-1):
-                    curr_top += pic.height + DIST_METRIC(positions['charts_vertical_gap'])
-                    curr_left = initial_left
-                    current_row = []
-                    shapes_added.append(current_row)
-        
-        if current_row:
-            current_row = []
-            shapes_added.append(current_row)
+        shapes_added = []
         table_shapes = []
-        if tables:
-            curr_left = DIST_METRIC(positions['multi_item_margin_left']
-                                      if len(tables) > 1
-                                      else positions['single_table_margin_left'] or positions['single_item_margin_left'])
-            initial_left = curr_left
-            curr_top = DIST_METRIC(positions['multi_item_margin_top'] if len(charts) == 0 else positions['single_table_margin_top'])
+        num_charts = 0
+        num_elements = sum([len(row) for row in elements])
+        initial_left = DIST_METRIC(positions['multi_item_left']
+                                   if num_elements > 1
+                                   else positions['single_item_left'])
+        curr_top = DIST_METRIC(positions['multi_item_top']
+                               if num_elements > 1
+                               else positions['single_item_top'])
+        for row in elements:
+            curr_left = initial_left
+            shape_row = []
+            row_height = 0
+            for elem in row:
+                if is_table_instance(elem):
+                    shape = self._add_table_to_slide(elem, slide,
+                                                     left = curr_left,
+                                                     top = curr_top,
+                                                     positions = positions,
+                                                     table_font_attrs = table_font_attrs,
+                                                     border_kwargs = border_kwargs,
+                                                     include_internal_cell_borders = include_internal_cell_borders,
+                                                     caption_font_attrs = caption_font_attrs)
+                    table_shapes.append(shape)
+                elif is_chart_instance(elem):
+                    num_charts += 1
+                    shape = self._add_chart_to_slide(elem, slide,
+                                                     left = curr_left,
+                                                     top = curr_top,
+                                                     tmp_filename = f'pptx-img-{num_charts}.png')
+                else:
+                    raise ValueError(f'Cannot render elements of type {type(elem)} to pptx')
+                curr_left += shape.width + DIST_METRIC(positions['horizontal_gap'])
+                row_height = max(row_height, shape.height)
+                shape_row.append(shape)
 
-            for i, table in enumerate(tables):
-                table_shape = self._add_table_to_slide(table, slide,
-                                                       left = curr_left,
-                                                       top = curr_top,
-                                                       positions = positions,
-                                                       table_font_attrs = table_font_attrs,
-                                                       border_kwargs = border_kwargs,
-                                                       include_internal_cell_borders = include_internal_cell_borders,
-                                                       caption_font_attrs = caption_font_attrs)
+            curr_top += row_height + DIST_METRIC(positions['vertical_gap'])
+            if shape_row:
+                shapes_added.append(shape_row)
 
-                curr_left += table_shape.width + DIST_METRIC(positions['charts_horizontal_gap'])
-                current_row.append(table_shape)
-                table_shapes.append(table_shape)
-                if (i % tables_per_row) == (tables_per_row-1):
-                    curr_top += table_shape.height + DIST_METRIC(positions['charts_vertical_gap'])
-                    curr_left = initial_left
-                    current_row = []
-                    shapes_added.append(current_row)
-
-        if not current_row:
-            shapes_added = shapes_added[:-1]
-            
-        if auto_position_charts_and_tables:
-            if charts_and_tables:
-                # create a new "shapes_added" list of items by row, in the order of charts/tables spcified by "charts_and_tables"
-                chart_shapes_iter = iter(chart_shapes)
-                table_shapes_iter = iter(table_shapes)
-                shapes_added = []
-                current_row = []
-                for i, item in enumerate(charts_and_tables):
-                    if is_table_instance(item):
-                        current_row.append(next(table_shapes_iter))
-                    else:
-                        current_row.append(next(chart_shapes_iter))
-                    if (i+1) % charts_per_row == 0:
-                        shapes_added.append(current_row)
-                        current_row = []
-                if current_row:
-                    shapes_added.append(current_row)
-
+        if auto_position_elements:
             content_area_top = subtitle.top + subtitle.height
             content_area_height = self.presentation.slide_height - content_area_top
             if len(others) == 1:
-                footnotes = others[0] #assume remaining text shape is cell footnotes
-                content_area_height -= self.presentation.slide_height - footnotes.top 
+                footnotes = others[0] # assume remaining text shape is cell footnotes
+                content_area_height -= self.presentation.slide_height - footnotes.top
             # calculate shift from slide centre needed to put shapes in centre between bottom of subtitle and top of footnotes (if present)
             centre_y_shift = content_area_height/2 + content_area_top - self.presentation.slide_height/2
             self.auto_position_shapes(shapes_added,
-                                      DIST_METRIC(positions['charts_horizontal_gap']),
-                                      DIST_METRIC(positions['charts_vertical_gap']),
+                                      DIST_METRIC(positions['horizontal_gap']),
+                                      DIST_METRIC(positions['vertical_gap']),
                                       centre_y_shift)
             for table_shape in table_shapes:
                 caption_box = getattr(table_shape, '_pptx_pandas_caption', None)
@@ -292,16 +304,16 @@ class PresentationWriter():
             self.remove_empty_text_boxes(slide)
         self.save_presentation()
         return slide
-    
-    def auto_position_shapes(self, shapes_by_row: list[list[pptx.shapes.base.BaseShape]], 
-                             horizontal_margin: int, vertical_margin: int, centre_y_shift: int = 0):
+
+    def auto_position_shapes(self, shapes_by_row: list[list[pptx.shapes.base.BaseShape]],
+                             horizontal_gap: int, vertical_gap: int, centre_y_shift: int = 0):
         shapes_by_col = list(zip_longest(*shapes_by_row))
         col_widths = [max([s.width for s in col if s is not None]) for col in shapes_by_col]
         row_heights = [max([s.height for s in row]) for row in shapes_by_row]
         total_width = sum(col_widths)
         total_height = sum(row_heights)
 
-        total_height_inc_margins = total_height + (len(row_heights)-1)*vertical_margin
+        total_height_inc_margins = total_height + (len(row_heights)-1)*vertical_gap
         top_pos = (self.presentation.slide_height - total_height_inc_margins) / 2
         for cell_height, row in zip(row_heights, shapes_by_row):
             if len(row) < len(col_widths):
@@ -313,15 +325,15 @@ class PresentationWriter():
             else:
                 cell_widths = col_widths
                 row_width = total_width
-            row_width += (len(row)-1) * horizontal_margin
+            row_width += (len(row)-1) * horizontal_gap
 
             # calculate left position to centre the cell on the page, given row width
             left_pos = (self.presentation.slide_width - row_width) / 2
             for shape, width in zip(row, cell_widths):
-                #now position the shape in the centre of containing cell
+                # now position the shape in the centre of containing cell
                 shape.top = int(top_pos + (cell_height - shape.height) / 2 + centre_y_shift)
                 shape.left = int(left_pos + (width - shape.width) / 2)
-                left_pos += width + horizontal_margin
+                left_pos += width + horizontal_gap
 
             top_pos += cell_height
 
@@ -332,7 +344,8 @@ class PresentationWriter():
                 elem = shape.element
                 elem.getparent().remove(elem)
     
-    def overwrite_pptx(self, slide_title, charts: Optional(list[Chart]) = None, tables: Optional(list[Table]) = None):
+    def overwrite_pptx(self, slide_title,
+                       elements: list[list[Union[Chart, Table]]]):
         prs = self.presentation
 
         for i, slide in enumerate(prs.slides):
@@ -348,39 +361,32 @@ class PresentationWriter():
                 break
 
         if matched_title:
-            found_charts = []
-            found_tables = []
+            found_shapes = []
             for s in slide.shapes:
                 if isinstance(s, pptx.shapes.picture.Picture):
-                    found_charts.append(s)
+                    found_shapes.append(s)
                 elif isinstance(s, pptx.shapes.graphfrm.GraphicFrame) and s.has_table:
-                    found_tables.append(s)
+                    found_shapes.append(s)
 
-            if charts:
-                if len(charts) != len(found_charts):
-                    raise RuntimeError('Need %d Picture shapes but %d available on slide "%s"'
-                                       % (len(charts), len(found_charts), slide_title))
+            flattened_elements = []
+            for row in elements:
+                flattened_elements.extend(row)
 
-                for i, chart in enumerate(charts):
-                    img_file = 'test%d.png' % i
+            for i, (elem, shape) in enumerate(zip(flattened_elements, found_shapes)):
+                if elem == chart and shape == chart:
+                    img_file = 'pptx-img-%d.png' % i
                     chart_to_file(chart, img_file)
 
                     # Replace image:
-                    picture = found_charts[i]
+                    picture = shape
                     with open(img_file, 'rb') as f:
                         imgBlob = f.read()
                     imgRID = picture._pic.xpath('./p:blipFill/a:blip/@r:embed')[0]
                     imgPart = slide.part.related_parts[imgRID]
                     imgPart._blob = imgBlob
-
-            if tables:
-                if len(tables) != len(found_tables):
-                    raise RuntimeError('Need %d Table shapes but %d available on slide "%s"'
-                                       % (tables, len(found_tables), slide_title))
-                    
-                for i, strats_table in enumerate(tables):
+                elif elem == table and shape == table:
                     table_df = table_to_dataframe(table)
-                    write_pptx_dataframe(table_df, found_tables[i].table, overwrite_formatting = False)
+                    write_pptx_dataframe(table_df, shape.table, overwrite_formatting = False)
 
             self.save_presentation()
         else:
@@ -388,6 +394,9 @@ class PresentationWriter():
 
 def is_table_instance(obj: Any) -> bool:
     return isinstance(obj, pandas.DataFrame) or hasattr(obj, 'get_formatted_df')
+
+def is_chart_instance(obj: Any) -> bool:
+    return hasattr(obj, 'write_image') or hasattr(getattr(obj, 'figure', None), 'savefig')
 
 def table_to_dataframe(table: Table) -> pandas.DataFrame:
     if isinstance(table, pandas.DataFrame):
