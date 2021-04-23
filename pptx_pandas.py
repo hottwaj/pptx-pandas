@@ -59,7 +59,9 @@ class PresentationWriter():
                  default_include_internal_cell_borders: bool = True,
                  default_border_kwargs: dict = {},
                  default_slide_layout: str = 'Normal Page',
-                 default_remove_empty_text_boxes: bool = False):
+                 default_remove_empty_text_boxes: bool = False,
+                 default_auto_position_elements: bool = False,
+                 save_every: Optional[int] = 1):
         self.pptx_file = pptx_file
         self.pptx_title = pptx_title
         
@@ -88,6 +90,9 @@ class PresentationWriter():
         self.default_border_kwargs = default_border_kwargs
         self.default_slide_layout = default_slide_layout
         self.default_remove_empty_text_boxes = default_remove_empty_text_boxes
+        self.default_auto_position_elements = default_auto_position_elements
+        self.save_every = save_every
+        self.slide_count = 0
         
     def save_presentation(self):
         self.presentation.save(self.pptx_file)
@@ -183,7 +188,7 @@ class PresentationWriter():
                     overwrite_only: Optional[bool] = None,
                     elements_per_row: Optional[int] = None,
                     position_overrides: dict = {},
-                    auto_position_elements: bool = False,
+                    auto_position_elements: Optional[bool] = False,
                     remove_empty_text_boxes: Optional[bool] = None,
                     table_font_attrs: Optional[dict] = None,
                     caption_font_attrs: Optional[dict] = None,
@@ -281,6 +286,7 @@ class PresentationWriter():
             if shape_row:
                 shapes_added.append(shape_row)
 
+        auto_position_elements = auto_position_elements if auto_position_elements is not None else self.default_auto_position_elements
         if auto_position_elements:
             content_area_top = subtitle.top + subtitle.height
             content_area_height = self.presentation.slide_height - content_area_top
@@ -302,7 +308,9 @@ class PresentationWriter():
         remove_empty_text_boxes = remove_empty_text_boxes if remove_empty_text_boxes is not None else self.default_remove_empty_text_boxes
         if remove_empty_text_boxes:
             self.remove_empty_text_boxes(slide)
-        self.save_presentation()
+        self.slide_count += 1
+        if self.save_every is not None and (self.slide_count % self.save_every) == 0:
+            self.save_presentation()
         return slide
 
     def auto_position_shapes(self, shapes_by_row: list[list[pptx.shapes.base.BaseShape]],
@@ -406,8 +414,8 @@ def table_to_dataframe(table: Table) -> pandas.DataFrame:
     else:
         return ValueError('table_to_dataframe(): Given table object is not a DataFrame or PrettyPandas object')
     table_df.columns = [s.replace('<br>', '\n')
-                        for s in table_df.columns
-                        if isinstance(s, str)]
+                        if isinstance(s, str) else s
+                        for s in table_df.columns]
     return table_df
 
 empty_text_set = {'', None}
