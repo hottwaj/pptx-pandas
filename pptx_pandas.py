@@ -221,7 +221,7 @@ class PresentationWriter():
                     elements = [elements]
                 else:
                     # use elements_per_row to wrap the elements list into grouped rows
-                    elements = grouped(elements, elements_per_row)
+                    elements = list(grouped(elements, elements_per_row))
 
         positions = {**self.default_positions, **position_overrides}
         self.check_positions_settings(positions)
@@ -260,7 +260,9 @@ class PresentationWriter():
             shape_row = []
             row_height = 0
             for elem in row:
-                if is_table_instance(elem):
+                if elem is None:
+                    continue
+                elif is_table_instance(elem):
                     shape = self._add_table_to_slide(elem, slide,
                                                      left = curr_left,
                                                      top = curr_top,
