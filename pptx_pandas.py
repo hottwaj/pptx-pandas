@@ -222,6 +222,10 @@ class PresentationWriter():
                 else:
                     # use elements_per_row to wrap the elements list into grouped rows
                     elements = list(grouped(elements, elements_per_row))
+            else:
+                if elements_per_row is not None:
+                    import warnings
+                    warnings.warn('write_slide: elements_per_row is ignored when elements is a list of lists (i.e. a row+cell specification of elements)')
 
         positions = {**self.default_positions, **position_overrides}
         self.check_positions_settings(positions)
