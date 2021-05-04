@@ -188,7 +188,7 @@ class PresentationWriter():
                     overwrite_only: Optional[bool] = None,
                     elements_per_row: Optional[int] = None,
                     position_overrides: dict = {},
-                    auto_position_elements: Optional[bool] = False,
+                    auto_position_elements: Optional[bool] = None,
                     remove_empty_text_boxes: Optional[bool] = None,
                     table_font_attrs: Optional[dict] = None,
                     caption_font_attrs: Optional[dict] = None,
@@ -349,7 +349,7 @@ class PresentationWriter():
                 shape.left = int(left_pos + (width - shape.width) / 2)
                 left_pos += width + horizontal_gap
 
-            top_pos += cell_height
+            top_pos += cell_height + vertical_gap
 
     @classmethod
     def remove_empty_text_boxes(cls, slide):
